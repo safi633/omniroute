@@ -1,0 +1,4 @@
+{
+  "_doc": "Tables that exist ONLY in databases upgraded from an older version. Two causes, and they call for different fixes: (a) residue whose CREATE left the migration set in some past cycle but survives where it already existed — allowlist it here; (b) a table created LAZILY at runtime with `CREATE TABLE IF NOT EXISTS` inside a feature code path — whether a database has it depends on whether that feature ran, so it diverges by TIMING and can show up on EITHER side. Fix (b) with a migration instead of an entry here (see src/lib/db/migrations/163_model_capabilities.sql); an allowlist entry only hides it in one direction. Either way, recorded so check-install-upgrade.mjs can still fail on a NEW divergence. The opposite direction (a table a clean install creates but an upgrade does not) is NEVER allowlisted: it means every existing user is missing structure the code expects.",
+  "residualTables": {}
+}

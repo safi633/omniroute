@@ -1,0 +1,254 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
+import { PageHeader } from "@omniroute/ui-kit/page-header";
+import Button from "@/shared/components/Button";
+import { LocalOnlyNotice } from "@/shared/components/LocalOnlyNotice";
+import { useLocalOnlyBlocked } from "@/shared/hooks/useLocalOnlyAccess";
+import { detectLocalOnlyRejection } from "@/shared/utils/localOnlyAccess";
+import type { InterceptedRequest } from "@/mitm/inspector/types";
+import { useTrafficStream } from "./hooks/useTrafficStream";
+import { useTrafficFilters } from "./hooks/useTrafficFilters";
+import { useResizablePanels } from "./hooks/useResizablePanels";
+import { useSessionRecorder } from "./hooks/useSessionRecorder";
+import { useSystemProxyExitGuard } from "./hooks/useSystemProxyExitGuard";
+import { CaptureModesToolbar } from "./components/CaptureModesToolbar";
+import { TopBarControls } from "./components/TopBarControls";
+import { RequestStreamingList } from "./components/RequestStreamingList";
+import { DetailsPanel } from "./components/DetailsPanel";
+import { HistoricSessionBanner } from "./components/session/HistoricSessionBanner";
+
+const BUFFER_MAX = 1000;
+const CAPTURE_MODES_API_PATH = "/api/tools/traffic-inspector/capture-modes";
+
+interface TrafficInspectorHeaderProps {
+  title?: string;
+  subtitle?: string;
+  purpose?: string;
+}
+
+function TrafficInspectorHeader({ title, subtitle, purpose }: TrafficInspectorHeaderProps) {
+  return (
+    title && (
+      <div className="shrink-0 px-4 pt-4 pb-2">
+        <PageHeader
+          compact
+          title={title}
+          description={subtitle ? <span>{subtitle}</span> : undefined}
+        />
+        {purpose && <p className="text-xs text-text-muted mt-2 max-w-2xl italic">{purpose}</p>}
+      </div>
+    )
+  );
+}
+
+/**
+ * Every Traffic Inspector API (capture modes, sessions, the live socket, the TPROXY status)
+ * is a local-only route. A session that cannot reach them gets the notice instead of an
+ * inspector that stays empty; the workspace, and all of its requests, mounts only otherwise.
+ */
+export function TrafficInspectorPageClient(props: TrafficInspectorHeaderProps = {}) {
+  const localOnly = useLocalOnlyBlocked(CAPTURE_MODES_API_PATH);
+  if (!localOnly) return <TrafficInspectorWorkspace {...props} />;
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      <TrafficInspectorHeader {...props} />
+      <div className="px-4 pt-4">
+        <LocalOnlyNotice />
+      </div>
+    </div>
+  );
+}
+
+function TrafficInspectorWorkspace({ title, subtitle, purpose }: TrafficInspectorHeaderProps) {
+  const t = useTranslations("trafficInspector");
+  const [containerHeight, setContainerHeight] = useState(600);
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
+  const [selectedRequest, setSelectedRequest] = useState<InterceptedRequest | null>(null);
+  const {
+    filters,
+    setProfile,
+    setHost,
+    setAgent,
+    setStatus,
+    setSessionId,
+    setSameContext,
+    toggleLive,
+  } = useTrafficFilters();
+  const [{ listWidth, collapsed }, { startDrag, toggleCollapse }] = useResizablePanels();
+  const [streamState, streamActions] = useTrafficStream(filters);
+  const recorder = useSessionRecorder();
+  const [captureModes, setCaptureModes] = useState<{ systemProxy?: { applied: boolean } } | null>(
+    null
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(CAPTURE_MODES_API_PATH)
+      .then(async (r) => {
+        // Local-only rejection: the page swaps this workspace for the notice.
+        if (await detectLocalOnlyRejection(r, CAPTURE_MODES_API_PATH)) return null;
+        return r.ok ? r.json() : null;
+      })
+      .then((data: { systemProxy?: { applied: boolean } } | null) => {
+        if (!cancelled) setCaptureModes(data);
+      })
+      .catch(() => {
+        /* best-effort */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useSystemProxyExitGuard({ applied: captureModes?.systemProxy?.applied ?? false });
+
+  const listContainerCallback = useCallback((el: HTMLDivElement | null) => {
+    listContainerRef.current = el;
+    if (el) setContainerHeight(el.clientHeight);
+  }, []);
+
+  const exportHar = useCallback(async () => {
+    try {
+      const res = await fetch("/api/tools/traffic-inspector/export.har");
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `traffic-${Date.now()}.har`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleSessionSelect = useCallback(
+    (id: string | undefined) => {
+      setSessionId(id);
+    },
+    [setSessionId]
+  );
+
+  const handleRecordStart = useCallback(() => {
+    void recorder.start();
+  }, [recorder]);
+
+  const handleRecordStop = useCallback(() => {
+    void recorder.stop();
+  }, [recorder]);
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      <TrafficInspectorHeader title={title} subtitle={subtitle} purpose={purpose} />
+
+      {/* Capture modes toolbar */}
+      <div className="shrink-0 px-4 pt-4 pb-2">
+        <CaptureModesToolbar customHostCount={0} />
+      </div>
+
+      {/* Historic session banner */}
+      {filters.sessionId !== undefined && (
+        <div className="shrink-0 px-4 pb-2">
+          <HistoricSessionBanner
+            sessionName={recorder.sessions.find((s) => s.id === filters.sessionId)?.name ?? null}
+            onBackToLive={() => setSessionId(undefined)}
+          />
+        </div>
+      )}
+
+      {/* Top bar filter/controls */}
+      <div className="shrink-0">
+        <TopBarControls
+          filters={filters}
+          onProfileChange={setProfile}
+          onHostChange={setHost}
+          onAgentChange={setAgent}
+          onStatusChange={setStatus}
+          liveOnly={filters.liveOnly ?? false}
+          onToggleLive={toggleLive}
+          paused={streamState.paused}
+          onPause={streamActions.pause}
+          onResume={streamActions.resume}
+          onClear={streamActions.clear}
+          onExport={exportHar}
+          connected={streamState.connected}
+          total={streamState.total}
+          maxSize={BUFFER_MAX}
+          pendingCount={streamState.pendingCount}
+          recording={recorder.recording}
+          session={recorder.session}
+          elapsed={recorder.elapsed}
+          sessions={recorder.sessions}
+          onRecordStart={handleRecordStart}
+          onRecordStop={handleRecordStop}
+          onSessionSelect={handleSessionSelect}
+          onSessionDelete={recorder.deleteSession}
+        />
+      </div>
+
+      {/* Split pane */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* List pane */}
+        <div
+          ref={listContainerCallback}
+          className="shrink-0 overflow-hidden border-r border-border flex flex-col"
+          style={{ width: listWidth }}
+        >
+          <div className="flex items-center justify-between px-2 py-1 border-b border-border bg-bg-subtle shrink-0">
+            <span className="text-xs text-text-muted font-medium">
+              {t("requestCount", { count: streamState.total })}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={toggleCollapse}
+              aria-expanded={!collapsed}
+              aria-label={collapsed ? t("expandList") : t("collapseList")}
+              icon={collapsed ? "chevron_right" : "chevron_left"}
+            />
+          </div>
+
+          {!collapsed && (
+            <div className="flex-1 overflow-hidden">
+              <RequestStreamingList
+                requests={streamState.requests}
+                selectedId={selectedRequest?.id ?? null}
+                onSelect={setSelectedRequest}
+                containerHeight={containerHeight}
+                onSameContext={setSameContext}
+                sameContextKey={filters.sameContextKey}
+                onClearContextFilter={() => setSameContext(undefined)}
+              />
+            </div>
+          )}
+
+          {collapsed && (
+            <div className="flex-1 flex items-start justify-center pt-4">
+              <span
+                className="text-xs text-text-muted font-mono"
+                style={{ writingMode: "vertical-rl" }}
+              >
+                {t("requestCountShort", { count: streamState.total })}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Drag handle */}
+        <div
+          onMouseDown={startDrag}
+          className="w-1 bg-border hover:bg-primary cursor-col-resize shrink-0 transition-colors"
+          aria-hidden="true"
+        />
+
+        {/* Detail pane */}
+        <div className="flex-1 overflow-hidden">
+          <DetailsPanel request={selectedRequest} allRequests={streamState.requests} />
+        </div>
+      </div>
+    </div>
+  );
+}

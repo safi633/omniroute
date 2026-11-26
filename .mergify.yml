@@ -1,0 +1,53 @@
+# Mergify — merge queue RETIRED by the owner's decision of 2026-11-19.
+#
+# History: the Mergify `release` queue (WS3.4/D5 of the v3.8.49 quality/velocity master plan:
+# owner-applied `queue` label, serial squash, checks_timeout 240 min) and the opt-in
+# `relay-integration` queue landed release PRs until 2026-11-19 (last Mergify merge: #19538,
+# 2026-11-15). Their rules, and the rule that removed the `queue` label after a merge, are in
+# git history. Release PRs are now merged by hand under the repository ruleset "Require green
+# gates on the active release" (`Gate / CI` + `Gate / Quality`) until omni-queue runs in live
+# mode, and through omni-queue after that (docs/ops/OMNI_QUEUE.md).
+#
+# WHY this file is kept instead of deleted: the Mergify GitHub App is still installed, and
+# Mergify documents that "With no Mergify configuration, your queue already ... Merges
+# automatically when your required checks pass" once someone comments `@mergifyio queue`
+# (docs.mergify.com/merge-queue/setup). The docs do not say what that command does on a config
+# without `queue_rules`, so the commands that would merge or rewrite a pull request are
+# refused here: each condition list below is `closed` AND `-closed`, which no pull request can
+# match. `commands_restrictions` is read whatever Mergify products are enabled
+# (docs.mergify.com/configuration/file-format). `refresh` and `dequeue` keep their defaults:
+# they neither merge nor push.
+#
+# Contract: tests/unit/mergify-queue-config.test.ts. Do not add `queue_rules`,
+# `merge_protections_settings` or a merging `pull_request_rules` action back: two queues would
+# act on the same release PRs.
+
+commands_restrictions:
+  queue:
+    conditions:
+      - closed
+      - -closed
+  requeue:
+    conditions:
+      - closed
+      - -closed
+  rebase:
+    conditions:
+      - closed
+      - -closed
+  update:
+    conditions:
+      - closed
+      - -closed
+  squash:
+    conditions:
+      - closed
+      - -closed
+  backport:
+    conditions:
+      - closed
+      - -closed
+  copy:
+    conditions:
+      - closed
+      - -closed
